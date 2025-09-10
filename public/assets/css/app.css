@@ -1,0 +1,105 @@
+/* ===== Repartidores Ver (estilos de vista) ===== */
+:root {
+  --primary: #DE4C8A;
+  --border: #e5e7eb;
+  --text-muted: #6b7280;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --danger:  #ef4444;
+  --info:    #3b82f6;
+}
+
+/* Botón fantasma */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: #111827;
+  padding: .45rem .8rem;
+  border-radius: .8rem;
+}
+.btn-ghost:hover { background: #f9fafb; }
+
+/* Texto atenuado */
+.muted { color: var(--text-muted) !important; }
+
+/* Badges de estado */
+.badge { border-radius: 999px; padding: .35rem .6rem; font-weight: 600; font-size: .78rem; }
+.badge-candidato { color: #7c3aed; background: #f3e8ff; border: 1px solid #e9d5ff; }
+.badge-activo     { color: #166534; background: #dcfce7; border: 1px solid #bbf7d0; }
+.badge-inactivo   { color: #92400e; background: #ffedd5; border: 1px solid #fed7aa; }
+.badge-baja       { color: #991b1b; background: #fee2e2; border: 1px solid #fecaca; }
+
+/* Tablas */
+.table thead th { background: #f8fafc; font-weight: 600; }
+.table .right { text-align: right; }
+tr.tr-extra { background: linear-gradient(90deg, rgba(222,76,138,.08), transparent); }
+
+/* Cards más suaves */
+.card { border: 1px solid var(--border); border-radius: 1rem; box-shadow: 0 8px 24px rgba(0,0,0,.04); }
+.card > .card-body .h6 { color: var(--text-muted); }
+
+/* Modal: previsualización de documentos */
+#docModal .modal-body embed,
+#docModal .modal-body img {
+  border-radius: .75rem;
+  box-shadow: 0 8px 24px rgba(0,0,0,.06);
+}
+
+/* Controles del filtro de métricas */
+.card .row > form select,
+.card .row > form input[type="number"] {
+  border-radius: .6rem;
+  border: 1px solid var(--border);
+  padding: .35rem .6rem;
+}
+
+/* Botones secundarios pequeños */
+.btn.btn-sm { padding: .3rem .6rem; border-radius: .6rem; }
+/* ===== Layout de dos tarjetas (detalle) ===== */
+.kv { display:grid; grid-template-columns: 160px 1fr; gap:8px 16px; }
+.kv .k { color:#6b7280; font-weight:600; }
+.kv .v { word-break: break-word; }
+
+.card-info .card-header {
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg,#fafafa, #fff);
+  border-top-left-radius: 1rem; border-top-right-radius: 1rem;
+}
+.card-info .card-title { font-weight: 700; }
+
+/* Variante alternativa (“otro estilo”) */
+.card-alt .card-header {
+  background: #111827; color:#fff; border: none;
+}
+/* Variante alternativa (card-alt) */
+.card-alt {
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  box-shadow: 0 8px 24px rgba(0,0,0,.04); /* misma sombra que otras cards */
+  background: #fff;
+}
+
+.card-alt .card-header {
+  background: #f3f4f6; /* gris clarito */
+  color: #111827;      /* texto en negro */
+  border-bottom: 1px solid var(--border);
+  border-top-left-radius: 1rem;
+  border-top-right-radius: 1rem;
+}
+
+.card-alt .card-title {
+  font-weight: 700;
+  margin: 0;
+}
+
+.card-alt .kv .k { color:#94a3b8; }
+
+/* ===== Toolbar métricas ===== */
+.metrics-toolbar {
+  padding: .25rem .5rem; background: #f8fafc; border: 1px solid var(--border);
+  border-radius: .75rem; margin-bottom: .5rem;
+}
+.metrics-toolbar .input-group-text { background:#fff; border-color: var(--border); }
+.metrics-toolbar .form-select,
+.metrics-toolbar .form-control { border-color: var(--border); }
+.metrics-toolbar .btn { border-radius: .6rem; }
