@@ -1,0 +1,14 @@
+# Ignorar archivos sensibles y temporales
+config/db.php
+uploads/
+*.log
+*.sql
+*.zip
+*.rar
+*.7z
+*.bak
+.DS_Store
+Thumbs.db
+
+# Archivos de entorno (si los llegas a usar)
+.env

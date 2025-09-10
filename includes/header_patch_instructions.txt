@@ -1,0 +1,12 @@
+Cómo añadir el enlace 'Estadísticas' en tu menú existente
+
+1) Abre el archivo: includes/header.php
+2) Localiza el bloque de navegación (lista de enlaces <a> o <li>).
+3) Añade exactamente esta línea donde quieras que aparezca:
+   <a href="/public/estadisticas.php" class="btn">Estadísticas</a>
+
+Si tu menú es una lista (<ul><li>), usa:
+   <li><a href="/public/estadisticas.php">Estadísticas</a></li>
+
+También te dejamos un ejemplo de cabecera en:
+includes/header_with_estadisticas.php
