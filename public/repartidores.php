@@ -166,7 +166,7 @@ $qs = ['estado'=>$estado,'city'=>$city,'q'=>$q];
     <table class="table align-middle">
       <thead>
         <tr>
-          <th>Nombre</th><th>Email</th><th><?= $colTelefonoSQL?'Teléfono':'Teléfono (n/d)'; ?></th><th>Ciudad</th><th>Estado</th>
+          <th>Nombre</th><th>Email</th><th><?= $colTelefonoSQL?'Teléfono':'Teléfono (n/d)'; ?></th><th>Ciudad</th><th>Estado</th><th class="text-end">Acciones</th>
         </tr>
       </thead>
       <tbody>
@@ -174,12 +174,16 @@ $qs = ['estado'=>$estado,'city'=>$city,'q'=>$q];
           <tr><td colspan="5" class="text-center text-muted">Sin resultados</td></tr>
         <?php else: foreach ($rows as $r): ?>
           <tr>
-            <td><?= htmlspecialchars(trim(($r['nombre']??'').' '.($r['apellido']??'')), ENT_QUOTES, 'UTF-8') ?></td>
-            <td><?= htmlspecialchars($r['email'] ?? '—', ENT_QUOTES, 'UTF-8') ?></td>
-            <td><?= htmlspecialchars($r['telefono'] ?? '—', ENT_QUOTES, 'UTF-8') ?></td>
-            <td><span class="badge badge-soft"><?= htmlspecialchars($r['city'] ?? '—', ENT_QUOTES, 'UTF-8') ?></span></td>
-            <td><?= htmlspecialchars($r['estado'] ?? '—', ENT_QUOTES, 'UTF-8') ?></td>
-          </tr>
+  <td><?= htmlspecialchars(trim(($r['nombre']??'').' '.($r['apellido']??'')), ENT_QUOTES, 'UTF-8') ?></td>
+  <td><?= htmlspecialchars($r['email'] ?? '—', ENT_QUOTES, 'UTF-8') ?></td>
+  <td><?= htmlspecialchars($r['telefono'] ?? '—', ENT_QUOTES, 'UTF-8') ?></td>
+  <td><span class="badge badge-soft"><?= htmlspecialchars($r['city'] ?? '—', ENT_QUOTES, 'UTF-8') ?></span></td>
+  <td><?= htmlspecialchars($r['estado'] ?? '—', ENT_QUOTES, 'UTF-8') ?></td>
+  <td class="text-end">
+    <a class="btn btn-sm btn-outline-secondary" href="repartidores_ver.php?id=<?= (int)$r['id'] ?>">Ver</a>
+  </td>
+</tr>
+
         <?php endforeach; endif; ?>
       </tbody>
     </table>

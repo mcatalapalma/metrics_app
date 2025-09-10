@@ -1,333 +1,146 @@
 <?php
 declare(strict_types=1);
-$pageTitle='Repartidor — Detalle'; $activeMenu='repartidores';
-require_once __DIR__.'/../config/db.php';
-include __DIR__.'/../includes/header.php';
-if (!function_exists('h')) { function h($v){ return htmlspecialchars((string)($v ?? '')); } };
-$id=(int)($_GET['id']??0);
-$st=$pdo->prepare("SELECT * FROM repartidores WHERE id=:id"); $st->execute([':id'=>$id]); $rep=$st->fetch(PDO::FETCH_ASSOC);
-if(!$rep){ echo '<div class="alert alert-warning">Repartidor no encontrado.</div>'; include __DIR__.'/../includes/footer.php'; exit; }
+$active='repartidores'; $title='Detalle de repartidor';
 
-$docs_table = 'repartidor_documentos';
-try{ $pdo->query("SELECT 1 FROM repartidor_documentos LIMIT 1"); }
-catch(Throwable $e){ $docs_table = 'repartidore_documentos'; }
+require __DIR__.'/../includes/header.php';
+require __DIR__.'/../config/db.php';
 
-$docs=$pdo->prepare("SELECT id, repartidor_id, fecha, tipo, archivo, size_bytes FROM {$docs_table} WHERE repartidor_id=:id ORDER BY fecha DESC");
-$docs->execute([':id'=>$id]); $docs=$docs->fetchAll(PDO::FETCH_ASSOC);
+// Helpers
+function h($v){ return htmlspecialchars((string)$v, ENT_QUOTES, 'UTF-8'); }
 
-function estado_badge($e){ $e=strtoupper($e??''); $cls='badge-secondary';
-  if($e==='CANDIDATO') $cls='badge-candidato';
-  if($e==='ACTIVO') $cls='badge-activo';
-  if($e==='INACTIVO') $cls='badge-inactivo';
-  if($e==='BAJA') $cls='badge-baja';
-  return '<span class="badge '.$cls.'">'.$e.'</span>';
-}
-// ---------- MÉTRICAS ----------
-// Leer regla global: p_extra (default) o p_min
-$rule = $pdo->query("SELECT `value` FROM settings WHERE `key`='extra_rule'")->fetchColumn();
-if ($rule === false) { $rule = 'p_extra'; }
-
-// Obtener umbral según regla desde bases
-$threshold = null;
-if (!empty($rep['vehiculo']) && !empty($rep['contrato'])) {
-  $col = $rule === 'p_min' ? 'p_min' : 'p_extra';
-  $st = $pdo->prepare("SELECT $col FROM bases WHERE vehiculo=? AND contrato=?");
-  $st->execute([$rep['vehiculo'], $rep['contrato']]);
-  $threshold = $st->fetchColumn();
-  if ($threshold !== false) { $threshold = (int)$threshold; } else { $threshold = null; }
+$id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+if ($id <= 0) {
+  http_response_code(400);
+  echo '<div class="alert alert-danger">ID inválido.</div>';
+  require __DIR__.'/../includes/footer.php'; exit;
 }
 
-$userIds = [];
-$rows = $pdo->prepare("SELECT DISTINCT id_gd FROM cuentas_glovo WHERE repartidor=? AND id_gd IS NOT NULL");
-$rows->execute([$id]);
-$userIds = array_map(fn($r)=> (int)$r['id_gd'], $rows->fetchAll());
+/** Detectar columna de teléfono y cargar repartidor **/
+$cols = $pdo->query("SHOW COLUMNS FROM repartidores")->fetchAll(PDO::FETCH_COLUMN);
+$telCol = null;
+foreach (['telefono','phone','telefono1','tel','movil','mobile'] as $cand) {
+  if (in_array($cand, $cols, true)) { $telCol = $cand; break; }
+}
+$selectTelefono = $telCol ? "$telCol AS telefono" : "NULL AS telefono";
 
-// Filtro mes/año + límite por fecha de alta
-$month = isset($_GET['month']) ? max(1, min(12, (int)$_GET['month'])) : (int)date('m');
-$year  = isset($_GET['year'])  ? max(2000, min(2100, (int)$_GET['year'])) : (int)date('Y');
+$st = $pdo->prepare("SELECT id, nombre, apellido, email, $selectTelefono, city, estado FROM repartidores WHERE id = :id LIMIT 1");
+$st->execute([':id'=>$id]);
+$rep = $st->fetch(PDO::FETCH_ASSOC);
 
-$from_month = sprintf('%04d-%02d-01', $year, $month);
-$to         = date('Y-m-d', strtotime("$from_month +1 month"));
-$hire       = $rep['f_alta'];
-$from       = ($hire && $hire > $from_month) ? $hire : $from_month;
+if (!$rep) {
+  http_response_code(404);
+  echo '<div class="alert alert-warning">No se encontró el repartidor solicitado.</div>';
+  require __DIR__.'/../includes/footer.php'; exit;
+}
 
-$metrics = []; 
-$tot = [
-  'orders'=>0,'tips'=>0.0,'km'=>0.0,'hours'=>0.0,'extra'=>0,
-  'reassignments'=>0, 'adt_sum'=>0.0, 'adt_n'=>0
+/** Intentar obtener documentos desde BD (si la tabla existe) **/
+$docs = [];
+$docMap = [
+  'DNI_FRONT' => 'DNI/NIE - Front',
+  'DNI_BACK' => 'DNI/NIE - Back',
+  'PERMISO_CONDUCIR_FRONT' => 'Perm. Conducir - Front',
+  'PERMISO_CONDUCIR_BACK' => 'Perm. Conducir - Back',
+  'CV' => 'CV',
 ];
 
-if ($userIds) {
-  $in = implode(',', array_fill(0, count($userIds), '?'));
-  $sql = "SELECT user_id, metric_date, city, reassignments, orders, avg_delivery_time_min, tips, km, hours
-          FROM courier_metrics
-          WHERE user_id IN ($in)
-            AND metric_date >= ? AND metric_date < ?
-          ORDER BY metric_date ASC";
-  $params = array_merge($userIds, [$from, $to]);
-  $st = $pdo->prepare($sql);
-  $st->execute($params);
-  $metrics = $st->fetchAll();
+try {
+  $colsDoc = $pdo->query("SHOW COLUMNS FROM repartidor_documentos")->fetchAll(PDO::FETCH_COLUMN);
+  if ($colsDoc) {
+    $colRepId = in_array('repartidor_id',$colsDoc,true) ? 'repartidor_id' : (in_array('courier_id',$colsDoc,true)?'courier_id':null);
+    $colTipo  = in_array('tipo',$colsDoc,true) ? 'tipo' : null;
+    $colFile  = in_array('file',$colsDoc,true) ? 'file' : (in_array('filename',$colsDoc,true)?'filename':(in_array('ruta',$colsDoc,true)?'ruta':(in_array('path',$colsDoc,true)?'path':null)));
 
-  foreach ($metrics as &$m) {
-    $orders = (int)$m['orders'];
-    $extra = ($threshold !== null) ? max(0, $orders - (int)$threshold) : 0;
-    $m['extra'] = $extra;
-
-    $tot['orders'] += $orders;
-    $tot['tips']   += (float)$m['tips'];
-    $tot['km']     += (float)$m['km'];
-    $tot['hours']  += (float)$m['hours'];
-    $tot['extra']  += $extra;
-
-    $tot['reassignments'] += isset($m['reassignments']) ? (int)$m['reassignments'] : 0;
-
-    if (isset($m['avg_delivery_time_min']) && $m['avg_delivery_time_min'] !== null && $m['avg_delivery_time_min'] !== '') {
-      $tot['adt_sum'] += (float)$m['avg_delivery_time_min'];
-      $tot['adt_n']++;
+    if ($colRepId && $colTipo && $colFile) {
+      $sql = "SELECT $colTipo AS tipo, $colFile AS fichero FROM repartidor_documentos WHERE $colRepId=:id ORDER BY 1";
+      $s2 = $pdo->prepare($sql); $s2->execute([':id'=>$id]); $docs = $s2->fetchAll(PDO::FETCH_ASSOC);
     }
   }
-  unset($m);
+} catch (\Throwable $e) { /* tabla no existe o sin permisos */ }
+
+/** Construir rutas a ficheros en uploads si los tenemos **/
+$uploadsBaseFs  = dirname(__DIR__,1).'/uploads/repartidores/'.$id;
+$uploadsBaseUrl = '/metricas/metrics_app/uploads/repartidores/'.$id; // ajusta si tu base cambia
+
+function file_url_if_exists(string $pathFs, string $baseUrl, string $fileName): ?string {
+  $full = $pathFs.'/'.$fileName;
+  return is_file($full) ? ($baseUrl.'/'.rawurlencode($fileName)) : null;
 }
 
-$avg_delivery_time = $tot['adt_n'] > 0 ? $tot['adt_sum'] / $tot['adt_n'] : 0.0;
-
-// Export CSV (con nuevos campos)
-if (isset($_GET['export']) && $_GET['export']==='csv') {
-  header('Content-Type: text/csv; charset=utf-8');
-  header('Content-Disposition: attachment; filename=metrics_'.$id.'_'.$year.'-'.$month.'.csv');
-  $out = fopen('php://output','w');
-  fputcsv($out, ['user_id','metric_date','orders','extra orders','tips','km','hours','reassignments','avg_delivery_time_min'], ';');
-  foreach ($metrics as $m) {
-    fputcsv($out, [
-      $m['user_id'],
-      date('d/m/Y', strtotime($m['metric_date'])),
-      $m['orders'],
-      $m['extra'] ?? 0,
-      number_format((float)$m['tips'],2,'.',''),
-      number_format((float)$m['km'],2,'.',''),
-      number_format((float)$m['hours'],2,'.',''),
-      isset($m['reassignments']) ? (int)$m['reassignments'] : 0,
-      isset($m['avg_delivery_time_min']) && $m['avg_delivery_time_min']!==null && $m['avg_delivery_time_min']!=='' 
-        ? number_format((float)$m['avg_delivery_time_min'],2,'.','') : '0.00',
-    ], ';');
+// Si no hay documentos en BD, intentamos listar del filesystem
+if (!$docs) {
+  if (is_dir($uploadsBaseFs)) {
+    $list = glob($uploadsBaseFs.'/*.*') ?: [];
+    foreach ($list as $full) {
+      $docs[] = ['tipo'=>basename($full, '.'.pathinfo($full, PATHINFO_EXTENSION)), 'fichero'=>basename($full)];
+    }
   }
-  fputcsv($out, [
-    'TOTAL','',
-    $tot['orders'],
-    $tot['extra'],
-    number_format($tot['tips'],2,'.',''),
-    number_format($tot['km'],2,'.',''),
-    number_format($tot['hours'],2,'.',''),
-    (int)$tot['reassignments'],
-    number_format($avg_delivery_time,2,'.','')
-  ], ';');
-  fclose($out);
-  exit;
 }
 ?>
-<div class="card mb-3">
-  <div class="card-body d-flex justify-content-between align-items-center">
-    <h1 class="h5 m-0"><?= h(($rep['nombre']??'').' '.($rep['apellido']??'')) ?></h1>
-    <a href="repartidores.php" class="btn btn-ghost"><i class="fa-solid fa-arrow-left me-1"></i>Volver</a>
-  </div>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h3 class="mb-0">Repartidor: <?= h(trim(($rep['nombre']??'').' '.($rep['apellido']??''))) ?></h3>
+  <a class="btn btn-outline-secondary" href="repartidores.php">← Volver</a>
 </div>
 
-<div class="card mb-3 p-0">
-  <div class="row g-0 align-items-stretch">
-    <div class="col-md-6 border-end" style="border-color:var(--border)!important">
-      <div class="card-body">
-        <h2 class="h6">Datos personales</h2>
-        <div class="row g-2">
-          <div class="col-6"><div class="muted small">Nombre</div><div><?= h($rep['nombre']??'') ?></div></div>
-          <div class="col-6"><div class="muted small">Apellidos</div><div><?= h($rep['apellido']??'') ?></div></div>
-          <div class="col-6"><div class="muted small">DNI</div><div><?= h($rep['dni']??'') ?></div></div>
-          <div class="col-6"><div class="muted small">Nº S.S.</div><div><?= h($rep['ss']??'') ?></div></div>
-          <div class="col-6"><div class="muted small">Teléfono</div><div><?= h($rep['tel']??'') ?></div></div>
-          <div class="col-6"><div class="muted small">Email</div><div><?= h($rep['email']??'') ?></div></div>
-          <div class="col-12"><div class="muted small">IBAN</div><div><?= h($rep['iban']??'') ?></div></div>
+<div class="row g-3">
+  <div class="col-12 col-lg-8">
+    <div class="card p-3">
+      <h6 class="text-muted">Datos</h6>
+      <div class="row">
+        <div class="col-12 col-md-6">
+          <div class="mb-2"><strong>Email:</strong> <?= h($rep['email'] ?? '—') ?></div>
+          <div class="mb-2"><strong>Teléfono:</strong> <?= h($rep['telefono'] ?? '—') ?></div>
+        </div>
+        <div class="col-12 col-md-6">
+          <div class="mb-2"><strong>Ciudad:</strong> <span class="badge badge-soft"><?= h($rep['city'] ?? '—') ?></span></div>
+          <div class="mb-2"><strong>Estado:</strong> <?= h($rep['estado'] ?? '—') ?></div>
         </div>
       </div>
     </div>
-    <div class="col-md-6">
-      <div class="card-body">
-        <h2 class="h6">Datos laborables</h2>
-        <div class="row g-2">
-          <div class="col-6"><div class="muted small">Vehículo</div><div><?= h($rep['vehiculo']??'') ?></div></div>
-          <div class="col-6"><div class="muted small">Contrato (h)</div><div><?= h($rep['contrato']??'') ?></div></div>
-          <div class="col-6"><div class="muted small">City</div><div><?= h($rep['city']??'') ?></div></div>
-          <div class="col-6"><div class="muted small">Estado</div><div><?= estado_badge($rep['estado']??'') ?></div></div>
-          <div class="col-12"><div class="muted small">Fecha alta</div><div><?= h($rep['f_alta']??'') ?></div></div>
-          <div class="col-12"><div class="muted small">Notas</div><div><?= h($rep['notas']??'') ?></div></div>
+
+    <div class="card p-3 mt-3">
+      <h6 class="mb-2">Documentos</h6>
+      <?php if (!$docs): ?>
+        <div class="text-muted">No hay documentos registrados.</div>
+      <?php else: ?>
+        <div class="table-responsive">
+          <table class="table align-middle">
+            <thead><tr><th>Tipo</th><th>Archivo</th><th class="text-end">Acción</th></tr></thead>
+            <tbody>
+            <?php foreach ($docs as $d):
+              $tipo = (string)($d['tipo'] ?? '');
+              $label = $docMap[$tipo] ?? $tipo;
+              $file  = (string)($d['fichero'] ?? '');
+              $url   = $file ? file_url_if_exists($uploadsBaseFs, $uploadsBaseUrl, $file) : null;
+            ?>
+              <tr>
+                <td><?= h($label ?: 'Documento') ?></td>
+                <td><?= h($file ?: '—') ?></td>
+                <td class="text-end">
+                  <?php if ($url): ?>
+                    <a class="btn btn-sm btn-outline-primary" href="<?= h($url) ?>" target="_blank" rel="noopener">Ver/Descargar</a>
+                  <?php else: ?>
+                    <span class="text-muted">No disponible</span>
+                  <?php endif; ?>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
         </div>
+      <?php endif; ?>
+    </div>
+  </div>
+
+  <div class="col-12 col-lg-4">
+    <div class="card p-3">
+      <h6 class="mb-2">Acciones rápidas</h6>
+      <div class="d-grid gap-2">
+        <!-- Botones placeholder para próximas iteraciones -->
+        <button class="btn btn-outline-primary" disabled>Editar (próximamente)</button>
+        <button class="btn btn-outline-danger" disabled>Dar de baja (próximamente)</button>
       </div>
     </div>
   </div>
 </div>
 
-<div class="card my-3">
-  <div class="card-body">
-    <h2 class="h6 mb-3">Documentos</h2>
-    <div class="table-responsive">
-      <table class="table table-hover align-middle">
-        <thead><tr><th>Tipo</th><th>Fecha</th><th>Tamaño</th><th class="text-end">Acciones</th></tr></thead>
-        <tbody>
-          <?php foreach($docs as $d): $file='../storage/'.($d['archivo']??''); ?>
-          <tr>
-            <td><?= h($d['tipo']??'') ?></td>
-            <td><?= h($d['fecha']??'') ?></td>
-            <td><?= h(isset($d['size_bytes']) ? number_format((int)$d['size_bytes']/1024, 1).' KB' : '') ?></td>
-            <td class="text-end">
-              <button type="button" class="btn btn-ghost btn-sm" data-bs-toggle="modal" data-bs-target="#docModal" data-file="<?= h($file) ?>">
-                <i class="fa-regular fa-eye me-1"></i> Ver
-              </button>
-            </td>
-          </tr>
-          <?php endforeach; if(empty($docs)): ?>
-            <tr><td colspan="4" class="text-center muted">Sin documentos</td></tr>
-          <?php endif; ?>
-        </tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
-
-<!-- Sección MÉTRICAS -->
-<div class="card">
-  <div class="card-body">
-  <div class="row" style="justify-content:space-between;align-items:center">
-    <h2 class="h6 mb-3">Métricas</h2>
-    <div class="row">
-      <form method="get" class="row">
-        <input type="hidden" name="id" value="<?php echo (int)$id; ?>">
-        <select name="month">
-          <?php for($m=1;$m<=12;$m++){ $sel=$m===$month?'selected':''; echo "<option value='$m' $sel>".date('m',strtotime("2020-$m-01"))."</option>"; } ?>
-        </select>
-        <input type="number" name="year" value="<?php echo $year; ?>" min="2000" max="2100" style="width:110px">
-        <button class="btn" type="submit">Filtrar</button>
-      </form>
-      <a class="btn" style="margin-left:8px" href="?id=<?php echo (int)$id; ?>&month=<?php echo $month; ?>&year=<?php echo $year; ?>&export=csv">Exportar CSV</a>
-    </div>
-  </div>
-  <?php if (!$userIds): ?>
-    <p class="muted">No hay <code>user_id</code> vinculado. Asocia una cuenta en <a href="cuentas_glovo.php">Cuentas Glovo</a> para ver métricas.</p>
-  <?php else: ?>
-    <p class="muted">
-      Regla: <code><?php echo h($rule); ?></code>
-      • Umbral: <?php echo $threshold!==null ? (int)$threshold : '—'; ?>
-      • User IDs: <?php echo implode(', ', array_map('intval', $userIds)); ?>
-      • Rango: <?php echo date('d/m/Y', strtotime($from)); ?> a <?php echo date('d/m/Y', strtotime("$to -1 day")); ?>
-      <?php if ($hire && $from===$hire): ?> (filtrado por fecha de alta)<?php endif; ?>
-    </p>
-
-    <?php if ($metrics): 
-      $valor_extra_orders = $tot['extra'] * 3.5;
-      $valor_km = $tot['km'] * 0.03;
-      $total_extras = $tot['tips'] + $valor_extra_orders + $valor_km;
-    ?>
-    <div class="card" style="margin-bottom:12px">
-      <div class="card-body">
-      <p><strong>Total tips:</strong> <?php echo number_format($tot['tips'], 2, ',', '.'); ?> €</p>
-      <p><strong>Total extra orders:</strong> <?php echo number_format($tot['extra'], 0, ',', '.'); ?> × 3,50 € = <?php echo number_format($valor_extra_orders, 2, ',', '.'); ?> €</p>
-      <p><strong>Total km:</strong> <?php echo number_format($tot['km'], 2, ',', '.'); ?> × 0,03 € = <?php echo number_format($valor_km, 2, ',', '.'); ?> €</p>
-      <p><strong>Total Extras:</strong> <?php echo number_format($total_extras, 2, ',', '.'); ?> €</p>
-      <p><strong>Total hours:</strong> <?php echo number_format($tot['hours'], 2, ',', '.'); ?> h</p>
-      <hr style="border:0;border-top:1px solid #1f2937;margin:10px 0">
-      <p><strong>Total reasignaciones:</strong> <?php echo number_format((int)$tot['reassignments'], 0, ',', '.'); ?></p>
-      <p><strong>Media de Entrega (min):</strong> <?php echo number_format((float)$avg_delivery_time, 2, ',', '.'); ?> min</p>
-    </div></div>
-    <?php endif; ?>
-
-    <div class="card" style="overflow:auto;border-radius:12px;border:1px solid var(--b)">
-      <table class="table table-hover align-middle mb-0">
-        <thead>
-          <tr>
-            <th>user_id</th>
-            <th>metric_date</th>
-            <th class="right">orders</th>
-            <th class="right">extra orders</th>
-            <th class="right">tips</th>
-            <th class="right">km</th>
-            <th class="right">hours</th>
-            <th class="right">reassignments</th>
-            <th class="right">avg deliver (min)</th>
-          </tr>
-        </thead>
-        <tbody>
-          <?php foreach ($metrics as $m): $extra=(int)($m['extra'] ?? 0); $trcls=$extra>0?' class="tr-extra"':''; ?>
-          <tr<?php echo $trcls; ?>>
-            <td><?php echo (int)$m['user_id']; ?></td>
-            <td><?php echo date('d/m/Y', strtotime($m['metric_date'])); ?></td>
-            <td class="right"><?php echo number_format((int)$m['orders'], 0, ',', '.'); ?></td>
-            <td class="right"><?php echo number_format($extra, 0, ',', '.'); ?></td>
-            <td class="right"><?php echo number_format((float)$m['tips'], 2, ',', '.'); ?> €</td>
-            <td class="right"><?php echo number_format((float)$m['km'], 2, ',', '.'); ?></td>
-            <td class="right"><?php echo number_format((float)$m['hours'], 2, ',', '.'); ?></td>
-            <td class="right"><?php echo isset($m['reassignments']) ? number_format((int)$m['reassignments'], 0, ',', '.') : '0'; ?></td>
-            <td class="right">
-              <?php echo isset($m['avg_delivery_time_min']) && $m['avg_delivery_time_min']!==null && $m['avg_delivery_time_min']!==''
-                ? number_format((float)$m['avg_delivery_time_min'], 2, ',', '.')
-                : '0,00'; ?>
-            </td>
-          </tr>
-          <?php endforeach; if (!$metrics): ?>
-          <tr><td colspan="9" class="muted">No hay métricas en el rango seleccionado.</td></tr>
-          <?php endif; ?>
-        </tbody>
-        <?php if ($metrics): ?>
-        <tfoot>
-          <tr>
-            <th>TOTAL</th><th></th>
-            <th class="right"><?php echo number_format((int)$tot['orders'], 0, ',', '.'); ?></th>
-            <th class="right"><?php echo number_format((int)$tot['extra'], 0, ',', '.'); ?></th>
-            <th class="right"><?php echo number_format((float)$tot['tips'], 2, ',', '.'); ?> €</th>
-            <th class="right"><?php echo number_format((float)$tot['km'], 2, ',', '.'); ?></th>
-            <th class="right"><?php echo number_format((float)$tot['hours'], 2, ',', '.'); ?></th>
-            <th class="right"><?php echo number_format((int)$tot['reassignments'], 0, ',', '.'); ?></th>
-            <th class="right"><?php echo number_format((float)$avg_delivery_time, 2, ',', '.'); ?></th>
-          </tr>
-        </tfoot>
-        <?php endif; ?>
-      </table>
-    </div>
-  <?php endif; ?>
-</div></div>
-
-<div class="modal fade" id="docModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title">Vista previa documento</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
-      </div>
-      <div class="modal-body" id="docContent">
-        <div class="text-center muted">Cargando…</div>
-      </div>
-      <div class="modal-footer">
-        <a id="docDownload" class="btn btn-primary" href="#" download>Descargar</a>
-        <button type="button" class="btn btn-ghost" data-bs-dismiss="modal">Cerrar</button>
-      </div>
-    </div>
-  </div>
-</div>
-<script>
-const docModal = document.getElementById('docModal');
-docModal.addEventListener('show.bs.modal', function (event) { 
-  const btn = event.relatedTarget;
-  const file = btn.getAttribute('data-file');
-  const content = document.getElementById('docContent');
-  const download = document.getElementById('docDownload');
-  download.href = file || '#';
-  if(!file){ content.innerHTML = '<div class="text-center muted">Archivo no disponible</div>'; return; }
-  if(/\.pdf$/i.test(file)){
-    content.innerHTML = '<embed src="'+file+'" type="application/pdf" width="100%" height="650px">';
-  } else if(/\.(jpg|jpeg|png)$/i.test(file)){
-    content.innerHTML = '<img src="'+file+'" class="img-fluid" />';
-  } else {
-    content.innerHTML = '<p>Formato no soportado. <a class="btn btn-ghost btn-sm" href="'+file+'" target="_blank">Abrir</a></p>';
-  }
-});
-</script>
-
-<?php include __DIR__.'/../includes/footer.php'; ?>
+<?php require __DIR__.'/../includes/footer.php'; ?>
