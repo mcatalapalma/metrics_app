@@ -1,17 +1,14 @@
-  </main>
-</div>
-
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-const btnSidebar = document.getElementById('btnSidebar');
-const sidebar = document.getElementById('sidebar');
-const overlay = document.getElementById('overlay');
-if(btnSidebar){
-  btnSidebar.addEventListener('click', ()=>{ sidebar.classList.toggle('show'); overlay.classList.toggle('show'); });
-}
-if(overlay){
-  overlay.addEventListener('click', ()=>{ sidebar.classList.remove('show'); overlay.classList.remove('show'); });
-}
-</script>
+<?php
+// includes/footer.php
+?>
+  </div><!-- /.container -->
+</main>
+<footer class="border-top py-3 mt-auto">
+  <div class="container small text-muted d-flex justify-content-between">
+    <span>© <?= date('Y') ?> Metrics App</span>
+    <span>Hecho con ❤️ & Bootstrap</span>
+  </div>
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
