@@ -1,112 +1,250 @@
 <?php
 declare(strict_types=1);
-$pageTitle='Repartidores'; $activeMenu='repartidores';
-require_once __DIR__.'/../config/db.php';
-include __DIR__.'/../includes/header.php';
-if (!function_exists('h')) { function h($v){ return htmlspecialchars((string)($v ?? '')); } };
-$per_page=(int)($_GET['per_page']??25); if(!in_array($per_page,[25,50,100])) $per_page=25;
-$page=max(1,(int)($_GET['page']??1));
-$f_estado=$_GET['estado']??''; $f_city=trim($_GET['city']??'');
+$active='repartidores'; $title='Repartidores';
 
-$sql_count="SELECT COUNT(*) FROM repartidores WHERE 1=1"; $params=[];
-if($f_estado&&in_array($f_estado,['CANDIDATO','ACTIVO','INACTIVO','BAJA'],true)){ $sql_count.=" AND estado=:e"; $params[':e']=$f_estado; }
-if($f_city){ $sql_count.=" AND city LIKE :c"; $params[':c']='%'.$f_city.'%'; }
-$st=$pdo->prepare($sql_count); $st->execute($params); $total=(int)$st->fetchColumn();
+require __DIR__.'/../includes/header.php';
+require __DIR__.'/../config/db.php';
+require __DIR__.'/../includes/csrf.php';
+require __DIR__.'/../includes/validators.php';
+require __DIR__.'/../includes/pagination.php';
 
-$offset=($page-1)*$per_page;
-$sql="SELECT * FROM repartidores WHERE 1=1";
-if($f_estado&&in_array($f_estado,['CANDIDATO','ACTIVO','INACTIVO','BAJA'],true)) $sql.=" AND estado=:e";
-if($f_city) $sql.=" AND city LIKE :c";
-$sql.=" ORDER BY id DESC LIMIT :o,:l";
-$st=$pdo->prepare($sql);
-foreach($params as $k=>$v) $st->bindValue($k,$v);
-$st->bindValue(':o',$offset,PDO::PARAM_INT); $st->bindValue(':l',$per_page,PDO::PARAM_INT);
-$st->execute(); $rows=$st->fetchAll(PDO::FETCH_ASSOC);
-
-function estado_badge($e){ $e=strtoupper($e??''); $cls='badge-secondary';
-  if($e==='CANDIDATO') $cls='badge-candidato';
-  if($e==='ACTIVO') $cls='badge-activo';
-  if($e==='INACTIVO') $cls='badge-inactivo';
-  if($e==='BAJA') $cls='badge-baja';
-  return '<span class="badge '.$cls.'">'.$e.'</span>';
+/** Detectar columnas reales de la tabla repartidores **/
+$cols = $pdo->query("SHOW COLUMNS FROM repartidores")->fetchAll(PDO::FETCH_COLUMN);
+$hasTelefono = in_array('telefono', $cols, true);
+$phoneAlt = null;
+if (!$hasTelefono) {
+  foreach (['phone','telefono1','tel','movil','mobile'] as $cand) {
+    if (in_array($cand, $cols, true)) { $phoneAlt = $cand; break; }
+  }
 }
-$total_pages=max(1,ceil($total/$per_page)); $from=$offset+1; $to=min($offset+$per_page,$total);
+$colTelefonoSQL = $hasTelefono ? 'telefono' : ($phoneAlt ?: null);
+
+// ---------- Filtros ----------
+$estado = $_GET['estado'] ?? 'ALL'; // ACTIVO | INACTIVO | BAJA | CANDIDATO | ALL
+$city   = $_GET['city']   ?? 'ALL';
+$q      = trim($_GET['q'] ?? '');
+$page   = max(1, (int)($_GET['page'] ?? 1));
+$per    = 20;
+
+$estados = [
+  'ALL'=>'Todos','ACTIVO'=>'Activo','INACTIVO'=>'Inactivo','BAJA'=>'Baja','CANDIDATO'=>'Candidato'
+];
+
+// Derivar ciudades desde datos si no tienes tabla cities
+$cities = $pdo->query("SELECT DISTINCT city FROM repartidores WHERE city IS NOT NULL AND city<>'' ORDER BY city")
+              ->fetchAll(PDO::FETCH_COLUMN);
+
+// ---------- Insert/Update (crear) ----------
+csrf_verify();
+$flash = null;
+
+if ($_SERVER['REQUEST_METHOD']==='POST') {
+  $op = $_POST['op'] ?? '';
+  if ($op==='add') {
+    $nombre   = v_text($_POST['nombre'] ?? '', 80);
+    $apellido = v_text($_POST['apellido'] ?? '', 120);
+    $email    = v_email($_POST['email'] ?? '');
+    $telInput = $_POST['telefono'] ?? '';
+    $tel      = v_phone($telInput);
+    $city_i   = v_text($_POST['city'] ?? '', 60);
+    $estado_i = $_POST['estado'] ?? 'CANDIDATO';
+
+    $err = [];
+    if (!$nombre)  { $err[]='Nombre requerido'; }
+    if ($email===null && isset($_POST['email']) && $_POST['email']!=='') { $err[]='Email no válido'; }
+    if ($colTelefonoSQL && $tel===null && $telInput!=='') { $err[]='Teléfono no válido'; }
+
+    if (empty($err)) {
+      // Construir INSERT dinámico según columnas disponibles
+      $fields = ['nombre','apellido','email','city','estado'];
+      $values = [$nombre,$apellido,$email,$city_i,$estado_i];
+
+      if ($colTelefonoSQL) {
+        $fields[] = $colTelefonoSQL;
+        $values[] = $tel;
+      }
+
+      $placeholders = implode(',', array_fill(0, count($fields), '?'));
+      $sql = "INSERT INTO repartidores (".implode(',', $fields).") VALUES ($placeholders)";
+      $st = $pdo->prepare($sql);
+      $st->execute($values);
+
+      $flash='Repartidor creado correctamente.';
+      header('Location: repartidores.php'); exit;
+    } else {
+      echo '<div class="alert alert-danger mt-3"><ul class="mb-0">';
+      foreach ($err as $e) echo '<li>'.htmlspecialchars($e, ENT_QUOTES, 'UTF-8').'</li>';
+      echo '</ul></div>';
+    }
+  }
+}
+
+// ---------- Listado ----------
+$where = [];
+$params = [];
+if ($estado !== 'ALL') { $where[] = "estado = :estado"; $params[':estado']=$estado; }
+if ($city   !== 'ALL') { $where[] = "city = :city";     $params[':city']=$city; }
+if ($q!=='') {
+  $busca = "(nombre LIKE :q OR apellido LIKE :q OR email LIKE :q";
+  if ($colTelefonoSQL) { $busca .= " OR $colTelefonoSQL LIKE :q"; }
+  $busca .= ")";
+  $where[] = $busca;
+  $params[':q'] = "%$q%";
+}
+$sqlWhere = $where ? ('WHERE '.implode(' AND ', $where)) : '';
+
+// total
+$st = $pdo->prepare("SELECT COUNT(*) FROM repartidores $sqlWhere");
+$st->execute($params);
+$total = (int)$st->fetchColumn();
+
+$pg = paginate($total, $page, $per);
+
+// datos: aliasar teléfono si existe; si no, devolver NULL AS telefono
+$selectTelefono = $colTelefonoSQL ? "$colTelefonoSQL AS telefono" : "NULL AS telefono";
+
+$st = $pdo->prepare("
+  SELECT id, nombre, apellido, email, $selectTelefono, city, estado
+  FROM repartidores
+  $sqlWhere
+  ORDER BY nombre, apellido
+  LIMIT :lim OFFSET :off
+");
+foreach ($params as $k=>$v) { $st->bindValue($k, $v); }
+$st->bindValue(':lim', $pg['limit'], PDO::PARAM_INT);
+$st->bindValue(':off', $pg['offset'], PDO::PARAM_INT);
+$st->execute();
+$rows = $st->fetchAll(PDO::FETCH_ASSOC);
+
+// QS para paginación
+$qs = ['estado'=>$estado,'city'=>$city,'q'=>$q];
 ?>
-<div class="card mb-3">
-  <div class="card-body d-flex justify-content-between align-items-center">
-    <h1 class="h5 m-0"><i class="fa-solid fa-user-group me-2"></i>Repartidores</h1>
-    <a class="btn btn-primary" href="repartidores_nuevo.php"><i class="fa-solid fa-plus me-1"></i>Nuevo Candidato</a>
+<div class="row g-3 align-items-end">
+  <div class="col-12 col-lg-9">
+    <form class="row g-2">
+      <div class="col-12 col-sm-3">
+        <label class="form-label">Estado</label>
+        <select name="estado" class="form-select">
+          <?php foreach($estados as $k=>$label): ?>
+            <option value="<?= htmlspecialchars($k, ENT_QUOTES, 'UTF-8') ?>" <?= $estado===$k?'selected':'' ?>><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="col-12 col-sm-3">
+        <label class="form-label">Ciudad</label>
+        <select name="city" class="form-select">
+          <option value="ALL" <?= $city==='ALL'?'selected':'' ?>>Todas</option>
+          <?php foreach ($cities as $c): ?>
+            <option value="<?= htmlspecialchars($c, ENT_QUOTES, 'UTF-8') ?>" <?= $city===$c?'selected':'' ?>>
+              <?= htmlspecialchars($c, ENT_QUOTES, 'UTF-8') ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div class="col-12 col-sm-4">
+        <label class="form-label">Buscar</label>
+        <input type="text" name="q" value="<?= htmlspecialchars($q, ENT_QUOTES, 'UTF-8') ?>" class="form-control" placeholder="Nombre, email<?= $colTelefonoSQL?', teléfono':''; ?>...">
+      </div>
+      <div class="col-12 col-sm-2">
+        <label class="form-label">&nbsp;</label>
+        <button class="btn btn-primary w-100">Filtrar</button>
+      </div>
+    </form>
+  </div>
+  <div class="col-12 col-lg-3 text-lg-end">
+    <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#modalAdd">+ Nuevo</button>
   </div>
 </div>
 
-<div class="card mb-3">
-  <div class="card-body">
-    <form class="row g-3" method="get" action="repartidores.php">
-      <input type="hidden" name="page" value="1">
-      <div class="col-md-3">
-        <label class="form-label">Estado</label>
-        <select name="estado" class="form-select">
-          <option value="">Todos</option>
-          <?php foreach(['CANDIDATO','ACTIVO','INACTIVO','BAJA'] as $opt){ $sel=$f_estado===$opt?'selected':''; echo "<option $sel>$opt</option>"; } ?>
-        </select>
+<?php if (!empty($flash)): ?>
+  <div class="alert alert-success mt-3"><?= htmlspecialchars($flash, ENT_QUOTES, 'UTF-8') ?></div>
+<?php endif; ?>
+
+<div class="card p-3 mt-3">
+  <div class="table-responsive">
+    <table class="table align-middle">
+      <thead>
+        <tr>
+          <th>Nombre</th><th>Email</th><th><?= $colTelefonoSQL?'Teléfono':'Teléfono (n/d)'; ?></th><th>Ciudad</th><th>Estado</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php if (!$rows): ?>
+          <tr><td colspan="5" class="text-center text-muted">Sin resultados</td></tr>
+        <?php else: foreach ($rows as $r): ?>
+          <tr>
+            <td><?= htmlspecialchars(trim(($r['nombre']??'').' '.($r['apellido']??'')), ENT_QUOTES, 'UTF-8') ?></td>
+            <td><?= htmlspecialchars($r['email'] ?? '—', ENT_QUOTES, 'UTF-8') ?></td>
+            <td><?= htmlspecialchars($r['telefono'] ?? '—', ENT_QUOTES, 'UTF-8') ?></td>
+            <td><span class="badge badge-soft"><?= htmlspecialchars($r['city'] ?? '—', ENT_QUOTES, 'UTF-8') ?></span></td>
+            <td><?= htmlspecialchars($r['estado'] ?? '—', ENT_QUOTES, 'UTF-8') ?></td>
+          </tr>
+        <?php endforeach; endif; ?>
+      </tbody>
+    </table>
+  </div>
+  <div class="d-flex justify-content-between align-items-center">
+    <div class="small text-muted">Total: <?= number_format($total) ?></div>
+    <?= render_pagination($pg['pages'], $pg['page'], $qs) ?>
+  </div>
+</div>
+
+<!-- Modal nuevo repartidor -->
+<div class="modal fade" id="modalAdd" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <form method="post" class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Nuevo repartidor</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
-      <div class="col-md-3">
-        <label class="form-label">City</label>
-        <input type="text" name="city" value="<?= h($f_city) ?>" class="form-control" placeholder="Palma, Ibiza…">
+      <div class="modal-body">
+        <?= csrf_field() ?>
+        <input type="hidden" name="op" value="add">
+        <div class="row g-2">
+          <div class="col-6">
+            <label class="form-label">Nombre*</label>
+            <input name="nombre" class="form-control" required>
+          </div>
+          <div class="col-6">
+            <label class="form-label">Apellido</label>
+            <input name="apellido" class="form-control">
+          </div>
+          <div class="col-6">
+            <label class="form-label">Email</label>
+            <input name="email" type="email" class="form-control" placeholder="nombre@dominio.com">
+          </div>
+          <div class="col-6">
+            <label class="form-label">
+              <?= $colTelefonoSQL ? 'Teléfono' : 'Teléfono (no disponible en BD)'; ?>
+            </label>
+            <input name="telefono" class="form-control"
+                   placeholder="<?= $colTelefonoSQL ? '+34 600 000 000' : '(sin columna en tabla)'; ?>"
+                   <?= $colTelefonoSQL ? '' : 'disabled'; ?>>
+          </div>
+          <div class="col-6">
+            <label class="form-label">Ciudad</label>
+            <input name="city" class="form-control" list="cities">
+            <datalist id="cities">
+              <?php foreach ($cities as $c): ?>
+                <option value="<?= htmlspecialchars($c, ENT_QUOTES, 'UTF-8') ?>">
+              <?php endforeach; ?>
+            </datalist>
+          </div>
+          <div class="col-6">
+            <label class="form-label">Estado</label>
+            <select name="estado" class="form-select">
+              <?php foreach ($estados as $k=>$label){ if($k==='ALL') continue; ?>
+                <option value="<?= htmlspecialchars($k, ENT_QUOTES, 'UTF-8') ?>"><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></option>
+              <?php } ?>
+            </select>
+          </div>
+        </div>
       </div>
-      <div class="col-md-3">
-        <label class="form-label">Por página</label>
-        <select name="per_page" class="form-select">
-          <?php foreach([25,50,100] as $n){ $sel=$per_page==$n?'selected':''; echo "<option $sel>$n</option>"; } ?>
-        </select>
-      </div>
-      <div class="col-md-3 d-flex align-items-end">
-        <button class="btn btn-ghost w-100"><i class="fa-solid fa-filter me-1"></i>Filtrar</button>
+      <div class="modal-footer">
+        <button class="btn btn-primary">Guardar</button>
       </div>
     </form>
   </div>
 </div>
 
-<div class="card">
-  <div class="card-body">
-    <div class="d-flex justify-content-between align-items-center mb-2">
-      <div class="text-muted small">Mostrando <?= (int)$from ?>–<?= (int)$to ?> de <?= (int)$total ?> (Página <?= (int)$page ?> de <?= (int)$total_pages ?>)</div>
-    </div>
-    <div class="table-responsive">
-      <table class="table table-hover align-middle">
-        <thead>
-          <tr><th>ID</th><th>Nombre</th><th>DNI</th><th>Tel</th><th>Email</th><th>City</th><th>Vehículo</th><th>Contrato</th><th>Estado</th><th></th></tr>
-        </thead>
-        <tbody>
-          <?php foreach($rows as $r): $id=(int)($r['id']??0); ?>
-          <tr>
-            <td><?= $id ?></td>
-            <td><a href="repartidores_ver.php?id=<?= $id ?>" class="link-primary"><?= h(($r['nombre']??'').' '.($r['apellido']??'')) ?></a></td>
-            <td><?= h($r['dni']??'') ?></td>
-            <td><?= h($r['tel']??'') ?></td>
-            <td><?= h($r['email']??'') ?></td>
-            <td><?= h($r['city']??'') ?></td>
-            <td><?= h($r['vehiculo']??'') ?></td>
-            <td><?= h($r['contrato']??'') ?></td>
-            <td><?= estado_badge($r['estado']??'') ?></td>
-            <td><a class="btn btn-ghost btn-sm" href="repartidores_ver.php?id=<?= $id ?>"><i class="fa-regular fa-eye me-1"></i>Ver</a></td>
-          </tr>
-          <?php endforeach; if(empty($rows)): ?>
-            <tr><td colspan="10" class="text-center muted">Sin resultados</td></tr>
-          <?php endif; ?>
-        </tbody>
-      </table>
-    </div>
-
-    <nav aria-label="Paginación">
-      <ul class="pagination mb-0">
-        <?php $q=http_build_query(array_merge($_GET,['per_page'=>$per_page]));
-        if($page>1){$prev=$page-1; echo "<li class='page-item'><a class='page-link' href='?{$q}&page={$prev}'>Anterior</a></li>";}
-        for($p=1;$p<=$total_pages;$p++){ $active=$p==$page?' active':''; echo "<li class='page-item{$active}'><a class='page-link' href='?{$q}&page={$p}'>{$p}</a></li>";}
-        if($page<$total_pages){$next=$page+1; echo "<li class='page-item'><a class='page-link' href='?{$q}&page={$next}'>Siguiente</a></li>";} ?>
-      </ul>
-    </nav>
-  </div>
-</div>
-
-<?php include __DIR__.'/../includes/footer.php'; ?>
+<?php require __DIR__.'/../includes/footer.php'; ?>
